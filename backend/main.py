@@ -1,5 +1,6 @@
 import os
 import httpx
+import traceback
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
@@ -33,7 +34,11 @@ app = FastAPI(
 # Enable CORS for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173", 
+        "http://127.0.0.1:5173",
+        "*" # Fallback if credentials aren't strict
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -157,196 +162,249 @@ async def seed_database():
 # ==========================================
 @app.get("/customers", response_model=List[schemas.Customer])
 async def get_customers():
-    async with httpx.AsyncClient() as client:
-        # Fetch customers and CTAs separately, then merge in Python
-        cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=*", headers=HEADERS)
-        if cust_res.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Failed to fetch customers: {cust_res.text}")
+    try:
+        async with httpx.AsyncClient() as client:
+            # Fetch customers and CTAs separately, then merge in Python
+            cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=*", headers=HEADERS)
+            if cust_res.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Failed to fetch customers: {cust_res.text}")
 
-        ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*", headers=HEADERS)
-        all_ctas = ctas_res.json() if ctas_res.status_code == 200 else []
+            ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*", headers=HEADERS)
+            all_ctas = ctas_res.json() if ctas_res.status_code == 200 else []
 
-        customers = cust_res.json()
-        for c in customers:
-            c["ctas"] = [cta for cta in all_ctas if cta["customer_id"] == c["id"]]
-        return [enrich_customer(c) for c in customers]
+            customers = cust_res.json()
+            for c in customers:
+                c["ctas"] = [cta for cta in all_ctas if cta["customer_id"] == c["id"]]
+            return [enrich_customer(c) for c in customers]
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Internal Error: {str(e)}")
 
 @app.get("/customers/{customer_id}", response_model=schemas.Customer)
 async def get_customer(customer_id: int):
-    async with httpx.AsyncClient() as client:
-        cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=*&id=eq.{customer_id}", headers=HEADERS)
-        if cust_res.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Failed to fetch customer: {cust_res.text}")
+    try:
+        async with httpx.AsyncClient() as client:
+            cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=*&id=eq.{customer_id}", headers=HEADERS)
+            if cust_res.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Failed to fetch customer: {cust_res.text}")
 
-        data = cust_res.json()
-        if not data:
-            raise HTTPException(status_code=404, detail="Customer not found")
+            data = cust_res.json()
+            if not data:
+                raise HTTPException(status_code=404, detail="Customer not found")
 
-        ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*&customer_id=eq.{customer_id}", headers=HEADERS)
-        data[0]["ctas"] = ctas_res.json() if ctas_res.status_code == 200 else []
-        return enrich_customer(data[0])
+            ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*&customer_id=eq.{customer_id}", headers=HEADERS)
+            data[0]["ctas"] = ctas_res.json() if ctas_res.status_code == 200 else []
+            return enrich_customer(data[0])
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Internal Error: {str(e)}")
 
 @app.post("/customers", response_model=schemas.Customer, status_code=201)
 async def create_customer(customer: schemas.CustomerCreate):
-    async with httpx.AsyncClient() as client:
-        payload = customer.model_dump()
-        if payload.get("last_login"):
-            payload["last_login"] = payload["last_login"].isoformat()
-        if payload.get("last_backup"):
-            payload["last_backup"] = payload["last_backup"].isoformat()
+    try:
+        async with httpx.AsyncClient() as client:
+            payload = customer.model_dump()
+            if payload.get("last_login"):
+                payload["last_login"] = payload["last_login"].isoformat()
+            if payload.get("last_backup"):
+                payload["last_backup"] = payload["last_backup"].isoformat()
 
-        res = await client.post(f"{SUPABASE_URL}/rest/v1/customers", headers=HEADERS, json=payload)
-        if res.status_code not in (200, 201):
-            raise HTTPException(status_code=500, detail=f"Failed to create customer: {res.text}")
+            res = await client.post(f"{SUPABASE_URL}/rest/v1/customers", headers=HEADERS, json=payload)
+            if res.status_code not in (200, 201):
+                raise HTTPException(status_code=400, detail=f"Failed to create customer: {res.text}")
 
-        data = res.json()
-        data[0]["ctas"] = []
-        return enrich_customer(data[0])
+            data = res.json()
+            data[0]["ctas"] = []
+            return enrich_customer(data[0])
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Internal Error: {str(e)}")
 
 @app.put("/customers/{customer_id}", response_model=schemas.Customer)
 async def update_customer(customer_id: int, customer: schemas.CustomerUpdate):
-    async with httpx.AsyncClient() as client:
-        payload = customer.model_dump(exclude_unset=True)
-        if payload.get("last_login"):
-            payload["last_login"] = payload["last_login"].isoformat()
-        if payload.get("last_backup"):
-            payload["last_backup"] = payload["last_backup"].isoformat()
+    try:
+        async with httpx.AsyncClient() as client:
+            payload = customer.model_dump(exclude_unset=True)
+            if payload.get("last_login"):
+                payload["last_login"] = payload["last_login"].isoformat()
+            if payload.get("last_backup"):
+                payload["last_backup"] = payload["last_backup"].isoformat()
 
-        res = await client.patch(f"{SUPABASE_URL}/rest/v1/customers?id=eq.{customer_id}", headers=HEADERS, json=payload)
-        if res.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Failed to update customer: {res.text}")
+            res = await client.patch(f"{SUPABASE_URL}/rest/v1/customers?id=eq.{customer_id}", headers=HEADERS, json=payload)
+            if res.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Failed to update customer: {res.text}")
 
-        data = res.json()
-        if not data:
-            raise HTTPException(status_code=404, detail="Customer not found")
+            data = res.json()
+            if not data:
+                raise HTTPException(status_code=404, detail="Customer not found")
 
-        ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*&customer_id=eq.{customer_id}", headers=HEADERS)
-        data[0]["ctas"] = ctas_res.json() if ctas_res.status_code == 200 else []
-        return enrich_customer(data[0])
+            ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*&customer_id=eq.{customer_id}", headers=HEADERS)
+            data[0]["ctas"] = ctas_res.json() if ctas_res.status_code == 200 else []
+            return enrich_customer(data[0])
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Internal Error: {str(e)}")
 
 @app.delete("/customers/{customer_id}")
 async def delete_customer(customer_id: int):
-    async with httpx.AsyncClient() as client:
-        res = await client.delete(f"{SUPABASE_URL}/rest/v1/customers?id=eq.{customer_id}", headers=HEADERS)
-        if res.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Failed to delete customer: {res.text}")
-    return {"message": f"Customer {customer_id} successfully deleted"}
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.delete(f"{SUPABASE_URL}/rest/v1/customers?id=eq.{customer_id}", headers=HEADERS)
+            if res.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Failed to delete customer: {res.text}")
+        return {"message": f"Customer {customer_id} successfully deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Internal Error: {str(e)}")
 
 
 # ==========================================
-# CTA (CALL TO ACTIONS) ENDPOINTS
+# ACTION (CALL TO ACTIONS) ENDPOINTS
 # ==========================================
-@app.get("/ctas", response_model=List[schemas.CTA])
+@app.get("/api/actions", response_model=List[schemas.CTA])
 async def get_ctas():
-    async with httpx.AsyncClient() as client:
-        ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*", headers=HEADERS)
-        if ctas_res.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Failed to fetch CTAs: {ctas_res.text}")
+    try:
+        async with httpx.AsyncClient() as client:
+            ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*", headers=HEADERS)
+            if ctas_res.status_code != 200:
+                print(f"Supabase GET CTAs Error: {ctas_res.text}")
+                raise HTTPException(status_code=400, detail=f"Failed to fetch CTAs: {ctas_res.text}")
 
-        # Fetch all customers to build a name lookup map
-        cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=id,name", headers=HEADERS)
-        customer_map = {}
-        if cust_res.status_code == 200:
-            for c in cust_res.json():
-                customer_map[c["id"]] = c["name"]
+            # Fetch all customers to build a name lookup map
+            cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=id,name", headers=HEADERS)
+            customer_map = {}
+            if cust_res.status_code == 200:
+                for c in cust_res.json():
+                    customer_map[c["id"]] = c["name"]
 
-        ctas = ctas_res.json()
-        for cta in ctas:
-            cta["customer_name"] = customer_map.get(cta["customer_id"], "Unknown")
-        return ctas
+            ctas = ctas_res.json()
+            for cta in ctas:
+                cta["customer_name"] = customer_map.get(cta["customer_id"], "Unknown")
+            return ctas
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Internal Error: {str(e)}")
 
-@app.post("/generate-cta", status_code=200)
+@app.post("/api/generate-actions", status_code=200)
 async def generate_ctas():
-    async with httpx.AsyncClient() as client:
-        # Fetch all customers
-        cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=*", headers=HEADERS)
-        if cust_res.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Failed to fetch customers: {cust_res.text}")
-        customers = cust_res.json()
-        
-        # Fetch active/pending CTAs
-        ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?status=in.(Pending,In Progress)", headers=HEADERS)
-        active_ctas = ctas_res.json() if ctas_res.status_code == 200 else []
-        
-        # Map of customer_id -> active action titles to prevent duplication
-        active_map = {}
-        for cta in active_ctas:
-            active_map.setdefault(cta["customer_id"], set()).add(cta["action"])
+    try:
+        async with httpx.AsyncClient() as client:
+            # Fetch all customers
+            cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=*", headers=HEADERS)
+            if cust_res.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Failed to fetch customers: {cust_res.text}")
+            customers = cust_res.json()
             
-        generated_count = 0
-        new_ctas = []
-        
-        for customer in customers:
-            c_id = customer["id"]
+            # Fetch active/pending CTAs
+            ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?status=in.(Pending,In Progress)", headers=HEADERS)
+            active_ctas = ctas_res.json() if ctas_res.status_code == 200 else []
             
-            # Check 1: Backup failed
-            if customer.get("backup_status") == "Failed":
-                action = "Fix Backup Immediately"
-                if c_id not in active_map or action not in active_map[c_id]:
-                    new_ctas.append({
-                        "customer_id": c_id,
-                        "action": action,
-                        "priority": "High",
-                        "status": "Pending"
-                    })
-                    generated_count += 1
-                    
-            # Check 2: Low usage
-            if customer.get("usage") is not None and customer.get("usage") < 40:
-                action = "Schedule Training"
-                if c_id not in active_map or action not in active_map[c_id]:
-                    new_ctas.append({
-                        "customer_id": c_id,
-                        "action": action,
-                        "priority": "Medium",
-                        "status": "Pending"
-                    })
-                    generated_count += 1
-                    
-            # Check 3: High tickets
-            if customer.get("tickets") is not None and customer.get("tickets") > 3:
-                action = "Escalate Issue"
-                if c_id not in active_map or action not in active_map[c_id]:
-                    new_ctas.append({
-                        "customer_id": c_id,
-                        "action": action,
-                        "priority": "High",
-                        "status": "Pending"
-                    })
-                    generated_count += 1
-                    
-        if new_ctas:
-            post_res = await client.post(f"{SUPABASE_URL}/rest/v1/ctas", headers=HEADERS, json=new_ctas)
-            if post_res.status_code not in (200, 201):
-                raise HTTPException(status_code=500, detail=f"Failed to save generated CTAs: {post_res.text}")
+            # Map of customer_id -> active action titles to prevent duplication
+            active_map = {}
+            for cta in active_ctas:
+                active_map.setdefault(cta["customer_id"], set()).add(cta["action"])
                 
-    return {"status": "done", "generated_count": generated_count}
+            generated_count = 0
+            new_ctas = []
+            
+            for customer in customers:
+                c_id = customer["id"]
+                
+                # Check 1: Backup failed
+                if customer.get("backup_status") == "Failed":
+                    action = "Fix Backup Immediately"
+                    if c_id not in active_map or action not in active_map[c_id]:
+                        new_ctas.append({
+                            "customer_id": c_id,
+                            "action": action,
+                            "priority": "High",
+                            "status": "Pending"
+                        })
+                        generated_count += 1
+                        
+                # Check 2: Low usage
+                if customer.get("usage") is not None and customer.get("usage") < 40:
+                    action = "Schedule Training"
+                    if c_id not in active_map or action not in active_map[c_id]:
+                        new_ctas.append({
+                            "customer_id": c_id,
+                            "action": action,
+                            "priority": "Medium",
+                            "status": "Pending"
+                        })
+                        generated_count += 1
+                        
+                # Check 3: High tickets
+                if customer.get("tickets") is not None and customer.get("tickets") > 3:
+                    action = "Escalate Issue"
+                    if c_id not in active_map or action not in active_map[c_id]:
+                        new_ctas.append({
+                            "customer_id": c_id,
+                            "action": action,
+                            "priority": "High",
+                            "status": "Pending"
+                        })
+                        generated_count += 1
+                        
+            if new_ctas:
+                post_res = await client.post(f"{SUPABASE_URL}/rest/v1/ctas", headers=HEADERS, json=new_ctas)
+                if post_res.status_code not in (200, 201):
+                    print(f"Supabase POST CTAs Error: {post_res.text}")
+                    raise HTTPException(status_code=400, detail=f"Failed to save generated CTAs: {post_res.text}")
+                    
+        return {"status": "done", "generated_count": generated_count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Internal Error: {str(e)}")
 
-@app.patch("/cta/{cta_id}", response_model=schemas.CTA)
+@app.patch("/api/actions/{cta_id}", response_model=schemas.CTA)
 async def update_cta_status(cta_id: int, status_update: schemas.CTAStatusUpdate):
-    async with httpx.AsyncClient() as client:
-        payload = {"status": status_update.status}
-        res = await client.patch(f"{SUPABASE_URL}/rest/v1/ctas?id=eq.{cta_id}", headers=HEADERS, json=payload)
-        if res.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Failed to update CTA status: {res.text}")
+    try:
+        async with httpx.AsyncClient() as client:
+            payload = {"status": status_update.status}
+            res = await client.patch(f"{SUPABASE_URL}/rest/v1/ctas?id=eq.{cta_id}", headers=HEADERS, json=payload)
+            if res.status_code != 200:
+                print(f"Supabase PATCH CTA Error: {res.text}")
+                raise HTTPException(status_code=400, detail=f"Failed to update CTA status: {res.text}")
 
-        data = res.json()
-        if not data:
-            raise HTTPException(status_code=404, detail="CTA not found")
+            data = res.json()
+            if not data:
+                raise HTTPException(status_code=404, detail="CTA not found")
 
-        cta = data[0]
-        # Lookup customer name separately
-        cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=id,name&id=eq.{cta['customer_id']}", headers=HEADERS)
-        if cust_res.status_code == 200 and cust_res.json():
-            cta["customer_name"] = cust_res.json()[0]["name"]
-        else:
-            cta["customer_name"] = "Unknown"
-        return cta
+            cta = data[0]
+            # Lookup customer name separately
+            cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=id,name&id=eq.{cta['customer_id']}", headers=HEADERS)
+            if cust_res.status_code == 200 and cust_res.json():
+                cta["customer_name"] = cust_res.json()[0]["name"]
+            else:
+                cta["customer_name"] = "Unknown"
+            return cta
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Internal Error: {str(e)}")
 
-@app.delete("/ctas/{cta_id}")
+@app.delete("/api/actions/{cta_id}")
 async def delete_cta(cta_id: int):
-    async with httpx.AsyncClient() as client:
-        res = await client.delete(f"{SUPABASE_URL}/rest/v1/ctas?id=eq.{cta_id}", headers=HEADERS)
-        if res.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Failed to delete CTA: {res.text}")
-    return {"message": f"CTA {cta_id} successfully deleted"}
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.delete(f"{SUPABASE_URL}/rest/v1/ctas?id=eq.{cta_id}", headers=HEADERS)
+            if res.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Failed to delete CTA: {res.text}")
+        return {"message": f"CTA {cta_id} successfully deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Internal Error: {str(e)}")

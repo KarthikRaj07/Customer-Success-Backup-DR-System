@@ -1,429 +1,232 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import './App.css';
+import Dashboard from './pages/Dashboard';
+import Customers from './pages/Customers';
+import ActionQueue from './pages/ActionQueue';
 
-const API_BASE_URL = 'http://localhost:8001';
+const API = 'http://127.0.0.1:8001';
 
-function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+// ── Sidebar nav items ─────────────────────────────────────────────────────────
+const NAV = [
+  {
+    id: 'dashboard',
+    label: 'Dashboard',
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+      </svg>
+    ),
+  },
+  {
+    id: 'customers',
+    label: 'Customers',
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+      </svg>
+    ),
+  },
+  {
+    id: 'actions',
+    label: 'Action Queue',
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+      </svg>
+    ),
+  },
+];
+
+export default function App() {
+  const [page, setPage] = useState('dashboard');
   const [customers, setCustomers] = useState([]);
   const [ctas, setCtas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
-  const [filterAtRiskOnly, setFilterAtRiskOnly] = useState(false);
-  const [notification, setNotification] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  // Fetch initial data
-  const fetchData = async () => {
+  const notify = useCallback((message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  }, []);
+
+  const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [customersRes, ctasRes] = await Promise.all([
-        axios.get(`${API_BASE_URL}/customers`),
-        axios.get(`${API_BASE_URL}/ctas`)
+      const [custRes, ctaRes] = await Promise.all([
+        axios.get(`${API}/customers`),
+        axios.get(`${API}/api/actions`),
       ]);
-      setCustomers(customersRes.data);
-      setCtas(ctasRes.data);
-    } catch (err) {
-      console.error("Error fetching data:", err);
-      showNotification("Failed to connect to FastAPI backend. Check if the server is running.", "error");
+      setCustomers(custRes.data);
+      setCtas(ctaRes.data);
+    } catch {
+      notify('Failed to reach backend. Is the server running on port 8001?', 'error');
     } finally {
       setLoading(false);
     }
-  };
+  }, [notify]);
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  // Helper to show temporary notification
-  const showNotification = (message, type = 'info') => {
-    setNotification({ message, type });
-    setTimeout(() => {
-      setNotification(null);
-    }, 4000);
-  };
-
-  // Seed sample database
-  const handleSeedDatabase = async () => {
+  const handleSeed = async () => {
     setActionLoading(true);
     try {
-      const res = await axios.post(`${API_BASE_URL}/seed`);
-      showNotification(res.data.message, "success");
-      await fetchData();
-    } catch (err) {
-      console.error(err);
-      showNotification("Failed to seed database.", "error");
-    } finally {
-      setActionLoading(false);
-    }
+      const r = await axios.post(`${API}/seed`);
+      notify(r.data.message);
+      await fetchAll();
+    } catch { notify('Seed failed.', 'error'); }
+    finally { setActionLoading(false); }
   };
 
-  // Generate CTAs automatically
   const handleGenerateCTAs = async () => {
     setActionLoading(true);
     try {
-      const res = await axios.post(`${API_BASE_URL}/generate-cta`);
-      showNotification(`Generation complete! Created ${res.data.generated_count} new actions.`, "success");
-      await fetchData();
-    } catch (err) {
-      console.error(err);
-      showNotification("Failed to generate actions.", "error");
-    } finally {
-      setActionLoading(false);
-    }
+      const r = await axios.post(`${API}/api/generate-actions`);
+      notify(`Generated ${r.data.generated_count} new actions.`);
+      await fetchAll();
+    } catch { notify('Generate failed.', 'error'); }
+    finally { setActionLoading(false); }
   };
 
-  // Update CTA Status via PATCH
   const handleUpdateStatus = async (ctaId, newStatus) => {
     try {
-      await axios.patch(`${API_BASE_URL}/cta/${ctaId}`, { status: newStatus });
-      showNotification(`Action status updated to "${newStatus}"`, "success");
-      
-      // Update local state directly to prevent full table reload flicker
-      setCtas(prevCtas => 
-        prevCtas.map(cta => cta.id === ctaId ? { ...cta, status: newStatus } : cta)
-      );
-    } catch (err) {
-      console.error(err);
-      showNotification("Failed to update status.", "error");
-    }
+      await axios.patch(`${API}/api/actions/${ctaId}`, { status: newStatus });
+      notify(`Status updated to "${newStatus}"`);
+      setCtas(prev => prev.map(c => c.id === ctaId ? { ...c, status: newStatus } : c));
+    } catch { notify('Status update failed.', 'error'); }
   };
 
-  // Calculate quick stats from customer data
-  const totalCount = customers.length;
-  const criticalCount = customers.filter(c => c.health_status === 'Critical').length;
-  const atRiskCount = customers.filter(c => c.health_status === 'At Risk').length;
-  const healthyCount = customers.filter(c => c.health_status === 'Healthy').length;
+  // Shared stats
+  const stats = {
+    total: customers.length,
+    healthy: customers.filter(c => c.health_status === 'Healthy').length,
+    atRisk: customers.filter(c => c.health_status === 'At Risk').length,
+    critical: customers.filter(c => c.health_status === 'Critical').length,
+    pending: ctas.filter(c => c.status === 'Pending').length,
+  };
 
-  // Filter CTAs based on filter selection
-  const filteredCtas = ctas.filter(cta => {
-    if (!filterAtRiskOnly) return true;
-    
-    // Find corresponding customer and check if health status is 'At Risk' or 'Critical'
-    const customer = customers.find(c => c.id === cta.customer_id);
-    return customer && (customer.health_status === 'At Risk' || customer.health_status === 'Critical');
-  });
+  const sharedProps = {
+    customers, ctas, stats, loading, actionLoading,
+    onRefresh: fetchAll, onSeed: handleSeed,
+    onGenerateCTAs: handleGenerateCTAs, onUpdateStatus: handleUpdateStatus,
+    notify,
+  };
 
   return (
-    <div className="min-h-screen text-slate-100 flex flex-col antialiased">
-      {/* Toast Notification */}
-      {notification && (
-        <div className={`fixed top-5 right-5 z-50 px-5 py-3 rounded-lg shadow-2xl transition-all duration-300 border backdrop-blur-md flex items-center gap-3 ${
-          notification.type === 'success' ? 'bg-emerald-950/80 border-emerald-500/30 text-emerald-300' :
-          notification.type === 'error' ? 'bg-rose-950/80 border-rose-500/30 text-rose-300' :
-          'bg-indigo-950/80 border-indigo-500/30 text-indigo-300'
+    <div className="flex min-h-screen text-slate-100">
+      {/* ── Toast ─────────────────────────────────────────────────── */}
+      {toast && (
+        <div className={`fixed top-5 right-5 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl border backdrop-blur-xl text-sm font-medium transition-all animate-fade-in ${
+          toast.type === 'error'
+            ? 'bg-rose-950/80 border-rose-500/30 text-rose-300'
+            : 'bg-emerald-950/80 border-emerald-500/30 text-emerald-300'
         }`}>
-          <span className="text-sm font-semibold">{notification.message}</span>
+          <span className={`w-2 h-2 rounded-full ${toast.type === 'error' ? 'bg-rose-400' : 'bg-emerald-400'}`} />
+          {toast.message}
         </div>
       )}
 
-      {/* Main Container */}
-      <main className="max-w-7xl w-full mx-auto p-4 md:p-8 flex-grow">
-        
-        {/* Navigation & Header */}
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8 pb-6 border-b border-slate-800">
-          <div>
-            <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent m-0">
-              Mini Gainsight
-            </h1>
-            <p className="text-slate-400 text-sm mt-1">
-              Customer Success & Re-Engagement Automation System
-            </p>
+      {/* ── Sidebar ───────────────────────────────────────────────── */}
+      <aside className={`flex flex-col glass-panel border-r border-slate-800/60 transition-all duration-300 ${sidebarOpen ? 'w-60' : 'w-16'} shrink-0`}>
+        {/* Brand */}
+        <div className="flex items-center gap-3 px-4 h-16 border-b border-slate-800/60">
+          <div className="shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
           </div>
-          
-          <div className="flex flex-wrap items-center gap-3">
-            <button 
-              onClick={handleSeedDatabase}
+          {sidebarOpen && (
+            <div className="overflow-hidden">
+              <p className="text-sm font-bold text-white whitespace-nowrap">Mini Gainsight</p>
+              <p className="text-[10px] text-slate-500 whitespace-nowrap">Customer Success</p>
+            </div>
+          )}
+          <button
+            onClick={() => setSidebarOpen(o => !o)}
+            className="ml-auto text-slate-600 hover:text-slate-300 transition"
+          >
+            <svg className={`w-4 h-4 transition-transform ${sidebarOpen ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Nav links */}
+        <nav className="flex-1 px-2 py-4 space-y-1">
+          {NAV.map(item => (
+            <button
+              key={item.id}
+              onClick={() => setPage(item.id)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${
+                page === item.id
+                  ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/20'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+              }`}
+            >
+              {item.icon}
+              {sidebarOpen && <span>{item.label}</span>}
+              {sidebarOpen && item.id === 'actions' && stats.pending > 0 && (
+                <span className="ml-auto bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{stats.pending}</span>
+              )}
+            </button>
+          ))}
+        </nav>
+
+        {/* Bottom action buttons */}
+        {sidebarOpen && (
+          <div className="px-3 pb-5 space-y-2">
+            <button
+              onClick={handleSeed}
               disabled={actionLoading}
-              className="px-4 py-2 text-xs font-semibold rounded-md border border-slate-700 bg-slate-900/60 hover:bg-slate-800 text-slate-300 transition duration-150 disabled:opacity-50"
+              className="w-full py-2 text-xs font-semibold rounded-lg border border-slate-700 bg-slate-900/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition disabled:opacity-50"
             >
               Seed Sample Data
             </button>
-            <button 
+            <button
               onClick={handleGenerateCTAs}
               disabled={actionLoading}
-              className="px-4 py-2 text-xs font-semibold rounded-md bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white shadow-lg shadow-indigo-950/30 transition duration-150 disabled:opacity-50"
+              className="w-full py-2 text-xs font-semibold rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white shadow-lg shadow-indigo-900/30 transition disabled:opacity-50"
             >
-              Generate Actions
+              {actionLoading ? 'Working…' : '⚡ Generate Actions'}
+            </button>
+          </div>
+        )}
+      </aside>
+
+      {/* ── Main content ──────────────────────────────────────────── */}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Top bar */}
+        <header className="h-16 flex items-center justify-between px-6 border-b border-slate-800/60 glass-panel shrink-0">
+          <div>
+            <h1 className="text-base font-bold text-white">
+              {NAV.find(n => n.id === page)?.label}
+            </h1>
+            <p className="text-xs text-slate-500">
+              {stats.total} accounts · {stats.critical} critical · {stats.atRisk} at risk
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {/* Live status indicator */}
+            <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500 bg-slate-900/60 border border-slate-800 rounded-lg px-3 py-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              Backend connected
+            </div>
+            <button onClick={fetchAll} disabled={loading} className="p-2 rounded-lg border border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition disabled:opacity-50">
+              <svg className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
             </button>
           </div>
         </header>
 
-        {/* Tab Controls */}
-        <div className="flex gap-2 mb-6 bg-slate-950/60 p-1 rounded-lg border border-slate-800/80 max-w-sm">
-          <button 
-            onClick={() => setActiveTab('dashboard')}
-            className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition duration-150 ${
-              activeTab === 'dashboard' 
-                ? 'bg-slate-800 text-white shadow-sm' 
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Dashboard
-          </button>
-          <button 
-            onClick={() => setActiveTab('actions')}
-            className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition duration-150 ${
-              activeTab === 'actions' 
-                ? 'bg-slate-800 text-white shadow-sm' 
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Action Queue ({ctas.length})
-          </button>
+        {/* Page body */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {page === 'dashboard' && <Dashboard {...sharedProps} />}
+          {page === 'customers' && <Customers {...sharedProps} />}
+          {page === 'actions' && <ActionQueue {...sharedProps} />}
         </div>
-
-        {/* Loading State */}
-        {loading ? (
-          <div className="h-96 flex flex-col justify-center items-center gap-4">
-            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
-            <p className="text-slate-400 text-sm">Loading health metrics...</p>
-          </div>
-        ) : (
-          <>
-            {/* Dashboard Statistics Panels */}
-            <section className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-              <div className="glass-card p-5 rounded-xl">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total Accounts</span>
-                <h3 className="text-3xl font-extrabold text-white mt-2">{totalCount}</h3>
-                <p className="text-[10px] text-slate-500 mt-1">Monitored active systems</p>
-              </div>
-              <div className="glass-card p-5 rounded-xl border-l-4 border-l-emerald-500">
-                <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Healthy</span>
-                <h3 className="text-3xl font-extrabold text-emerald-400 mt-2">{healthyCount}</h3>
-                <p className="text-[10px] text-slate-500 mt-1">No action required</p>
-              </div>
-              <div className="glass-card p-5 rounded-xl border-l-4 border-l-amber-500">
-                <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">At Risk</span>
-                <h3 className="text-3xl font-extrabold text-amber-400 mt-2">{atRiskCount}</h3>
-                <p className="text-[10px] text-slate-500 mt-1">Intervention recommended</p>
-              </div>
-              <div className="glass-card p-5 rounded-xl border-l-4 border-l-rose-500">
-                <span className="text-xs font-bold text-rose-500 uppercase tracking-wider">Critical</span>
-                <h3 className="text-3xl font-extrabold text-rose-500 mt-2">{criticalCount}</h3>
-                <p className="text-[10px] text-slate-500 mt-1">Immediate action required</p>
-              </div>
-            </section>
-
-            {/* TAB CONTENT: DASHBOARD */}
-            {activeTab === 'dashboard' && (
-              <div className="glass-panel rounded-xl overflow-hidden shadow-2xl">
-                <div className="p-5 border-b border-slate-800/80 flex justify-between items-center bg-slate-900/40">
-                  <h2 className="text-base font-bold text-white m-0">Customer Portfolio Health</h2>
-                  <span className="text-xs text-slate-400">{totalCount} accounts listed</span>
-                </div>
-                
-                {totalCount === 0 ? (
-                  <div className="p-12 text-center">
-                    <p className="text-slate-400 mb-4">No customer data found. Seed the database to get started.</p>
-                    <button 
-                      onClick={handleSeedDatabase}
-                      className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-md text-sm font-semibold transition"
-                    >
-                      Seed Sample Data
-                    </button>
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="border-b border-slate-800 text-xs font-bold uppercase tracking-wider text-slate-400 bg-slate-900/30">
-                          <th className="py-4 px-6">Name</th>
-                          <th className="py-4 px-6 text-center">Health Status</th>
-                          <th className="py-4 px-6">System Usage</th>
-                          <th className="py-4 px-6">Backup Status</th>
-                          <th className="py-4 px-6 text-center">Open Tickets</th>
-                          <th className="py-4 px-6">Last Login</th>
-                          <th className="py-4 px-6">Suggested Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60">
-                        {customers.map((customer) => (
-                          <tr key={customer.id} className="hover:bg-slate-900/30 transition duration-150">
-                            <td className="py-4 px-6 font-semibold text-white">{customer.name}</td>
-                            <td className="py-4 px-6 text-center">
-                              <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-bold border ${
-                                customer.health_status === 'Critical' ? 'bg-rose-950/40 border-rose-500/30 text-rose-400' :
-                                customer.health_status === 'At Risk' ? 'bg-amber-950/40 border-amber-500/30 text-amber-400' :
-                                'bg-emerald-950/40 border-emerald-500/30 text-emerald-400'
-                              }`}>
-                                {customer.health_status}
-                              </span>
-                            </td>
-                            <td className="py-4 px-6">
-                              <div className="flex items-center gap-3 min-w-[120px]">
-                                <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                                  <div 
-                                    className={`h-1.5 rounded-full ${
-                                      customer.usage < 40 ? 'bg-rose-500' : 'bg-indigo-500'
-                                    }`}
-                                    style={{ width: `${customer.usage}%` }}
-                                  ></div>
-                                </div>
-                                <span className="text-xs font-mono text-slate-300 w-8">{customer.usage}%</span>
-                              </div>
-                            </td>
-                            <td className="py-4 px-6">
-                              <span className={`inline-flex items-center gap-1.5 text-xs ${
-                                customer.backup_status === 'Failed' ? 'text-rose-400 font-semibold' : 'text-slate-300'
-                              }`}>
-                                <span className={`h-1.5 w-1.5 rounded-full ${
-                                  customer.backup_status === 'Failed' ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'
-                                }`}></span>
-                                {customer.backup_status}
-                              </span>
-                            </td>
-                            <td className="py-4 px-6 text-center">
-                              <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${
-                                customer.tickets > 3 ? 'bg-rose-950/60 border border-rose-500/20 text-rose-400' : 'bg-slate-800 text-slate-300'
-                              }`}>
-                                {customer.tickets}
-                              </span>
-                            </td>
-                            <td className="py-4 px-6 text-xs text-slate-400 font-mono">
-                              {customer.last_login}
-                            </td>
-                            <td className="py-4 px-6 text-xs">
-                              <span className={customer.suggested_action !== 'No action required' ? 'text-amber-300 font-medium' : 'text-slate-500'}>
-                                {customer.suggested_action}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* TAB CONTENT: ACTION QUEUE */}
-            {activeTab === 'actions' && (
-              <div className="glass-panel rounded-xl overflow-hidden shadow-2xl">
-                <div className="p-5 border-b border-slate-800/80 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-900/40">
-                  <div>
-                    <h2 className="text-base font-bold text-white m-0">Recommended Actions (CTAs)</h2>
-                    <p className="text-xs text-slate-400 mt-1">Actions triggered based on telemetry risk analysis</p>
-                  </div>
-                  
-                  {/* At Risk Only Filter Toggle */}
-                  <label className="inline-flex items-center cursor-pointer select-none">
-                    <input 
-                      type="checkbox" 
-                      checked={filterAtRiskOnly} 
-                      onChange={(e) => setFilterAtRiskOnly(e.target.checked)} 
-                      className="sr-only peer"
-                    />
-                    <div className="relative w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
-                    <span className="ms-3 text-xs font-semibold text-slate-300">Show only at-risk accounts</span>
-                  </label>
-                </div>
-                
-                {filteredCtas.length === 0 ? (
-                  <div className="p-12 text-center">
-                    <p className="text-slate-400">No pending actions. Click "Generate Actions" above to parse telemetry and identify at-risk customers.</p>
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="border-b border-slate-800 text-xs font-bold uppercase tracking-wider text-slate-400 bg-slate-900/30">
-                          <th className="py-4 px-6">Customer Name</th>
-                          <th className="py-4 px-6">Action Needed</th>
-                          <th className="py-4 px-6">Priority</th>
-                          <th className="py-4 px-6">Status</th>
-                          <th className="py-4 px-6 text-right">Update Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60">
-                        {filteredCtas.map((cta) => {
-                          // Find customer health to apply highlight rules
-                          const relatedCustomer = customers.find(c => c.id === cta.customer_id);
-                          const customerHealth = relatedCustomer ? relatedCustomer.health_status : 'Healthy';
-                          
-                          // Determine row highlight styling: Critical (red highlight), At Risk (orange highlight)
-                          let rowHighlightClass = "";
-                          if (customerHealth === 'Critical') {
-                            rowHighlightClass = "bg-rose-500/[0.04] hover:bg-rose-500/[0.06]";
-                          } else if (customerHealth === 'At Risk') {
-                            rowHighlightClass = "bg-amber-500/[0.03] hover:bg-amber-500/[0.05]";
-                          } else {
-                            rowHighlightClass = "hover:bg-slate-900/30";
-                          }
-
-                          return (
-                            <tr key={cta.id} className={`transition duration-150 ${rowHighlightClass}`}>
-                              {/* Customer Name with highlight indicators */}
-                              <td className="py-4 px-6 font-semibold">
-                                <div className="flex items-center gap-2">
-                                  {customerHealth === 'Critical' && (
-                                    <span className="w-2 h-2 rounded-full bg-rose-500 shadow-md shadow-rose-500/50"></span>
-                                  )}
-                                  {customerHealth === 'At Risk' && (
-                                    <span className="w-2 h-2 rounded-full bg-amber-500 shadow-md shadow-amber-500/50"></span>
-                                  )}
-                                  <span className={
-                                    customerHealth === 'Critical' ? 'text-rose-400 font-bold' :
-                                    customerHealth === 'At Risk' ? 'text-amber-400 font-medium' :
-                                    'text-slate-300'
-                                  }>
-                                    {cta.customer_name}
-                                  </span>
-                                </div>
-                              </td>
-                              
-                              <td className="py-4 px-6 text-sm text-slate-300 font-medium">{cta.action}</td>
-                              
-                              <td className="py-4 px-6">
-                                <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-bold ${
-                                  cta.priority === 'High' ? 'bg-rose-950/60 border border-rose-500/20 text-rose-400' :
-                                  'bg-amber-950/60 border border-amber-500/20 text-amber-400'
-                                }`}>
-                                  {cta.priority}
-                                </span>
-                              </td>
-                              
-                              <td className="py-4 px-6">
-                                <span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
-                                  cta.status === 'Completed' ? 'text-emerald-400' :
-                                  cta.status === 'In Progress' ? 'text-indigo-400 animate-pulse' :
-                                  'text-slate-400'
-                                }`}>
-                                  <span className={`w-1.5 h-1.5 rounded-full ${
-                                    cta.status === 'Completed' ? 'bg-emerald-400' :
-                                    cta.status === 'In Progress' ? 'bg-indigo-400' :
-                                    'bg-slate-500'
-                                  }`}></span>
-                                  {cta.status}
-                                </span>
-                              </td>
-                              
-                              {/* Status update Dropdown */}
-                              <td className="py-4 px-6 text-right">
-                                <select 
-                                  value={cta.status} 
-                                  onChange={(e) => handleUpdateStatus(cta.id, e.target.value)}
-                                  className="text-xs bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200 outline-none focus:border-indigo-500 cursor-pointer transition duration-150"
-                                >
-                                  <option value="Pending">Pending</option>
-                                  <option value="In Progress">In Progress</option>
-                                  <option value="Completed">Completed</option>
-                                </select>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )}
-          </>
-        )}
       </main>
     </div>
   );
 }
-
-export default App;
