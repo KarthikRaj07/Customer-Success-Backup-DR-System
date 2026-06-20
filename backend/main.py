@@ -7,6 +7,7 @@ from typing import List
 from dotenv import load_dotenv
 
 import schemas
+from backup_service import create_backup_file, upload_to_s3
 
 # Load environment variables
 load_dotenv()
@@ -266,6 +267,33 @@ async def delete_customer(customer_id: int):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"Internal Error: {str(e)}")
+
+
+# ==========================================
+# BACKUP ENDPOINTS
+# ==========================================
+from fastapi.concurrency import run_in_threadpool
+
+@app.post("/run-backup")
+async def run_backup():
+    try:
+        # Fetch real data from the database
+        customers_data = await get_customers()
+        
+        data = {
+            "customers": customers_data
+        }
+
+        # create_backup_file is fast enough to run synchronously
+        file_name = create_backup_file(data)
+        
+        # boto3 is blocking, so we run it in a threadpool
+        result = await run_in_threadpool(upload_to_s3, file_name)
+
+        return {"message": result}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=f"Backup Failed: {str(e)}")
 
 
 # ==========================================
