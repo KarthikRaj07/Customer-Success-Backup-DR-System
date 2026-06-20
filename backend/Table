@@ -1,0 +1,17 @@
+CREATE TABLE customers (
+  id SERIAL PRIMARY KEY,
+  name TEXT,
+  usage INT,
+  last_login DATE,
+  tickets INT,
+  backup_status TEXT,
+  last_backup DATE
+);
+
+CREATE TABLE ctas (
+  id SERIAL PRIMARY KEY,
+  customer_id INT,
+  action TEXT,
+  priority TEXT,
+  status TEXT
+);
