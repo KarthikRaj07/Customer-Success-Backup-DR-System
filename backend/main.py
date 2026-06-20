@@ -1,29 +1,71 @@
-from fastapi import FastAPI, Depends, HTTPException
+import os
+import httpx
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
 from typing import List
+from dotenv import load_dotenv
 
-import models
 import schemas
-from database import engine, get_db
 
-# Create database tables in case they don't exist yet (Safe to run; won't overwrite existing tables)
-models.Base.metadata.create_all(bind=engine)
+# Load environment variables
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+
+if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+    raise RuntimeError("SUPABASE_URL and SUPABASE_ANON_KEY must be set in the .env file")
+
+# Setup REST headers for Supabase API client
+HEADERS = {
+    "apikey": SUPABASE_ANON_KEY,
+    "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=representation"  # Returns the created/updated resource
+}
 
 app = FastAPI(
-    title="Customer Success Backup & DR System API",
-    description="Backend API for managing customers, backup health, and related CTA actions.",
+    title="Customer Success & Re-Engagement Automation System API",
+    description="Backend API proxying requests to Supabase REST API (Port 443) to bypass socket firewall blocks.",
     version="1.0.0"
 )
 
-# Enable CORS for frontend web app integration
+# Enable CORS for frontend integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust this to specific domains in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Helper function to enrich customer data with computed properties
+def enrich_customer(c: dict) -> dict:
+    backup_status = c.get("backup_status")
+    usage = c.get("usage")
+    tickets = c.get("tickets")
+    
+    # Compute Health Status
+    if backup_status == "Failed":
+        health = "Critical"
+    elif (usage is not None and usage < 40) or (tickets is not None and tickets > 3):
+        health = "At Risk"
+    else:
+        health = "Healthy"
+        
+    # Compute Suggested Action
+    if backup_status == "Failed":
+        action = "Fix Backup Immediately"
+    elif usage is not None and usage < 40:
+        action = "Schedule Training"
+    elif tickets is not None and tickets > 3:
+        action = "Escalate Issue"
+    else:
+        action = "No action required"
+        
+    c["health_status"] = health
+    c["suggested_action"] = action
+    return c
 
 @app.get("/")
 def read_root():
@@ -34,117 +76,277 @@ def read_root():
     }
 
 # ==========================================
+# SEED DATABASE
+# ==========================================
+@app.post("/seed", status_code=200)
+async def seed_database():
+    """Deletes existing customers & CTAs and seeds database with realistic sample records."""
+    async with httpx.AsyncClient() as client:
+        # Delete existing data (Using filters to clean tables)
+        await client.delete(f"{SUPABASE_URL}/rest/v1/ctas?id=gt.0", headers=HEADERS)
+        await client.delete(f"{SUPABASE_URL}/rest/v1/customers?id=gt.0", headers=HEADERS)
+        
+        # Sample Customers
+        sample_customers = [
+            {
+                "name": "Acme Corporation",
+                "usage": 85,
+                "last_login": "2026-06-18",
+                "tickets": 1,
+                "backup_status": "Success",
+                "last_backup": "2026-06-19"
+            },
+            {
+                "name": "Cyberdyne Systems",
+                "usage": 25,
+                "last_login": "2026-06-10",
+                "tickets": 2,
+                "backup_status": "Success",
+                "last_backup": "2026-06-19"
+            },
+            {
+                "name": "Initech LLC",
+                "usage": 70,
+                "last_login": "2026-06-05",
+                "tickets": 5,
+                "backup_status": "Success",
+                "last_backup": "2026-06-18"
+            },
+            {
+                "name": "Umbrella Corp",
+                "usage": 15,
+                "last_login": "2026-06-15",
+                "tickets": 4,
+                "backup_status": "Failed",
+                "last_backup": "2026-06-12"
+            },
+            {
+                "name": "Stark Industries",
+                "usage": 98,
+                "last_login": "2026-06-20",
+                "tickets": 0,
+                "backup_status": "Success",
+                "last_backup": "2026-06-20"
+            },
+            {
+                "name": "Hooli Inc",
+                "usage": 38,
+                "last_login": "2026-06-14",
+                "tickets": 6,
+                "backup_status": "Failed",
+                "last_backup": "2026-06-11"
+            },
+            {
+                "name": "Wayne Enterprises",
+                "usage": 90,
+                "last_login": "2026-06-19",
+                "tickets": 0,
+                "backup_status": "Success",
+                "last_backup": "2026-06-19"
+            }
+        ]
+        
+        res = await client.post(f"{SUPABASE_URL}/rest/v1/customers", headers=HEADERS, json=sample_customers)
+        if res.status_code not in (200, 201):
+            raise HTTPException(status_code=500, detail=f"Failed to seed customers: {res.text}")
+            
+    return {"message": "Database seeded with 7 sample customers successfully"}
+
+# ==========================================
 # CUSTOMER ENDPOINTS
 # ==========================================
-
 @app.get("/customers", response_model=List[schemas.Customer])
-def get_customers(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    """Retrieve all customers."""
-    return db.query(models.Customer).offset(skip).limit(limit).all()
+async def get_customers():
+    async with httpx.AsyncClient() as client:
+        # Fetch customers and CTAs separately, then merge in Python
+        cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=*", headers=HEADERS)
+        if cust_res.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch customers: {cust_res.text}")
+
+        ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*", headers=HEADERS)
+        all_ctas = ctas_res.json() if ctas_res.status_code == 200 else []
+
+        customers = cust_res.json()
+        for c in customers:
+            c["ctas"] = [cta for cta in all_ctas if cta["customer_id"] == c["id"]]
+        return [enrich_customer(c) for c in customers]
 
 @app.get("/customers/{customer_id}", response_model=schemas.Customer)
-def get_customer(customer_id: int, db: Session = Depends(get_db)):
-    """Retrieve a customer by ID."""
-    db_customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
-    if not db_customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    return db_customer
+async def get_customer(customer_id: int):
+    async with httpx.AsyncClient() as client:
+        cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=*&id=eq.{customer_id}", headers=HEADERS)
+        if cust_res.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch customer: {cust_res.text}")
+
+        data = cust_res.json()
+        if not data:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*&customer_id=eq.{customer_id}", headers=HEADERS)
+        data[0]["ctas"] = ctas_res.json() if ctas_res.status_code == 200 else []
+        return enrich_customer(data[0])
 
 @app.post("/customers", response_model=schemas.Customer, status_code=201)
-def create_customer(customer: schemas.CustomerCreate, db: Session = Depends(get_db)):
-    """Create a new customer record."""
-    db_customer = models.Customer(**customer.model_dump())
-    db.add(db_customer)
-    db.commit()
-    db.refresh(db_customer)
-    return db_customer
+async def create_customer(customer: schemas.CustomerCreate):
+    async with httpx.AsyncClient() as client:
+        payload = customer.model_dump()
+        if payload.get("last_login"):
+            payload["last_login"] = payload["last_login"].isoformat()
+        if payload.get("last_backup"):
+            payload["last_backup"] = payload["last_backup"].isoformat()
+
+        res = await client.post(f"{SUPABASE_URL}/rest/v1/customers", headers=HEADERS, json=payload)
+        if res.status_code not in (200, 201):
+            raise HTTPException(status_code=500, detail=f"Failed to create customer: {res.text}")
+
+        data = res.json()
+        data[0]["ctas"] = []
+        return enrich_customer(data[0])
 
 @app.put("/customers/{customer_id}", response_model=schemas.Customer)
-def update_customer(customer_id: int, customer: schemas.CustomerUpdate, db: Session = Depends(get_db)):
-    """Update an existing customer."""
-    db_customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
-    if not db_customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    
-    # Update only fields that were sent in the request
-    update_data = customer.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(db_customer, key, value)
-        
-    db.commit()
-    db.refresh(db_customer)
-    return db_customer
+async def update_customer(customer_id: int, customer: schemas.CustomerUpdate):
+    async with httpx.AsyncClient() as client:
+        payload = customer.model_dump(exclude_unset=True)
+        if payload.get("last_login"):
+            payload["last_login"] = payload["last_login"].isoformat()
+        if payload.get("last_backup"):
+            payload["last_backup"] = payload["last_backup"].isoformat()
+
+        res = await client.patch(f"{SUPABASE_URL}/rest/v1/customers?id=eq.{customer_id}", headers=HEADERS, json=payload)
+        if res.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Failed to update customer: {res.text}")
+
+        data = res.json()
+        if not data:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*&customer_id=eq.{customer_id}", headers=HEADERS)
+        data[0]["ctas"] = ctas_res.json() if ctas_res.status_code == 200 else []
+        return enrich_customer(data[0])
 
 @app.delete("/customers/{customer_id}")
-def delete_customer(customer_id: int, db: Session = Depends(get_db)):
-    """Delete a customer record."""
-    db_customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
-    if not db_customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    db.delete(db_customer)
-    db.commit()
+async def delete_customer(customer_id: int):
+    async with httpx.AsyncClient() as client:
+        res = await client.delete(f"{SUPABASE_URL}/rest/v1/customers?id=eq.{customer_id}", headers=HEADERS)
+        if res.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Failed to delete customer: {res.text}")
     return {"message": f"Customer {customer_id} successfully deleted"}
 
 
 # ==========================================
 # CTA (CALL TO ACTIONS) ENDPOINTS
 # ==========================================
-
 @app.get("/ctas", response_model=List[schemas.CTA])
-def get_ctas(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    """Retrieve all Call to Action (CTA) items."""
-    return db.query(models.CTA).offset(skip).limit(limit).all()
+async def get_ctas():
+    async with httpx.AsyncClient() as client:
+        ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?select=*", headers=HEADERS)
+        if ctas_res.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch CTAs: {ctas_res.text}")
 
-@app.get("/ctas/{cta_id}", response_model=schemas.CTA)
-def get_cta(cta_id: int, db: Session = Depends(get_db)):
-    """Retrieve a specific CTA by ID."""
-    db_cta = db.query(models.CTA).filter(models.CTA.id == cta_id).first()
-    if not db_cta:
-        raise HTTPException(status_code=404, detail="CTA not found")
-    return db_cta
+        # Fetch all customers to build a name lookup map
+        cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=id,name", headers=HEADERS)
+        customer_map = {}
+        if cust_res.status_code == 200:
+            for c in cust_res.json():
+                customer_map[c["id"]] = c["name"]
 
-@app.post("/ctas", response_model=schemas.CTA, status_code=201)
-def create_cta(cta: schemas.CTACreate, db: Session = Depends(get_db)):
-    """Create a new Call to Action."""
-    # Optional: Verify if the customer exists before creating a CTA
-    if cta.customer_id is not None:
-        db_customer = db.query(models.Customer).filter(models.Customer.id == cta.customer_id).first()
-        if not db_customer:
-            raise HTTPException(status_code=400, detail="Invalid customer_id: Customer does not exist")
-            
-    db_cta = models.CTA(**cta.model_dump())
-    db.add(db_cta)
-    db.commit()
-    db.refresh(db_cta)
-    return db_cta
+        ctas = ctas_res.json()
+        for cta in ctas:
+            cta["customer_name"] = customer_map.get(cta["customer_id"], "Unknown")
+        return ctas
 
-@app.put("/ctas/{cta_id}", response_model=schemas.CTA)
-def update_cta(cta_id: int, cta: schemas.CTAUpdate, db: Session = Depends(get_db)):
-    """Update a specific CTA."""
-    db_cta = db.query(models.CTA).filter(models.CTA.id == cta_id).first()
-    if not db_cta:
-        raise HTTPException(status_code=404, detail="CTA not found")
-    
-    # Optional: Verify customer_id if provided
-    if cta.customer_id is not None:
-        db_customer = db.query(models.Customer).filter(models.Customer.id == cta.customer_id).first()
-        if not db_customer:
-            raise HTTPException(status_code=400, detail="Invalid customer_id: Customer does not exist")
-
-    update_data = cta.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(db_cta, key, value)
+@app.post("/generate-cta", status_code=200)
+async def generate_ctas():
+    async with httpx.AsyncClient() as client:
+        # Fetch all customers
+        cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=*", headers=HEADERS)
+        if cust_res.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch customers: {cust_res.text}")
+        customers = cust_res.json()
         
-    db.commit()
-    db.refresh(db_cta)
-    return db_cta
+        # Fetch active/pending CTAs
+        ctas_res = await client.get(f"{SUPABASE_URL}/rest/v1/ctas?status=in.(Pending,In Progress)", headers=HEADERS)
+        active_ctas = ctas_res.json() if ctas_res.status_code == 200 else []
+        
+        # Map of customer_id -> active action titles to prevent duplication
+        active_map = {}
+        for cta in active_ctas:
+            active_map.setdefault(cta["customer_id"], set()).add(cta["action"])
+            
+        generated_count = 0
+        new_ctas = []
+        
+        for customer in customers:
+            c_id = customer["id"]
+            
+            # Check 1: Backup failed
+            if customer.get("backup_status") == "Failed":
+                action = "Fix Backup Immediately"
+                if c_id not in active_map or action not in active_map[c_id]:
+                    new_ctas.append({
+                        "customer_id": c_id,
+                        "action": action,
+                        "priority": "High",
+                        "status": "Pending"
+                    })
+                    generated_count += 1
+                    
+            # Check 2: Low usage
+            if customer.get("usage") is not None and customer.get("usage") < 40:
+                action = "Schedule Training"
+                if c_id not in active_map or action not in active_map[c_id]:
+                    new_ctas.append({
+                        "customer_id": c_id,
+                        "action": action,
+                        "priority": "Medium",
+                        "status": "Pending"
+                    })
+                    generated_count += 1
+                    
+            # Check 3: High tickets
+            if customer.get("tickets") is not None and customer.get("tickets") > 3:
+                action = "Escalate Issue"
+                if c_id not in active_map or action not in active_map[c_id]:
+                    new_ctas.append({
+                        "customer_id": c_id,
+                        "action": action,
+                        "priority": "High",
+                        "status": "Pending"
+                    })
+                    generated_count += 1
+                    
+        if new_ctas:
+            post_res = await client.post(f"{SUPABASE_URL}/rest/v1/ctas", headers=HEADERS, json=new_ctas)
+            if post_res.status_code not in (200, 201):
+                raise HTTPException(status_code=500, detail=f"Failed to save generated CTAs: {post_res.text}")
+                
+    return {"status": "done", "generated_count": generated_count}
+
+@app.patch("/cta/{cta_id}", response_model=schemas.CTA)
+async def update_cta_status(cta_id: int, status_update: schemas.CTAStatusUpdate):
+    async with httpx.AsyncClient() as client:
+        payload = {"status": status_update.status}
+        res = await client.patch(f"{SUPABASE_URL}/rest/v1/ctas?id=eq.{cta_id}", headers=HEADERS, json=payload)
+        if res.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Failed to update CTA status: {res.text}")
+
+        data = res.json()
+        if not data:
+            raise HTTPException(status_code=404, detail="CTA not found")
+
+        cta = data[0]
+        # Lookup customer name separately
+        cust_res = await client.get(f"{SUPABASE_URL}/rest/v1/customers?select=id,name&id=eq.{cta['customer_id']}", headers=HEADERS)
+        if cust_res.status_code == 200 and cust_res.json():
+            cta["customer_name"] = cust_res.json()[0]["name"]
+        else:
+            cta["customer_name"] = "Unknown"
+        return cta
 
 @app.delete("/ctas/{cta_id}")
-def delete_cta(cta_id: int, db: Session = Depends(get_db)):
-    """Delete a CTA."""
-    db_cta = db.query(models.CTA).filter(models.CTA.id == cta_id).first()
-    if not db_cta:
-        raise HTTPException(status_code=404, detail="CTA not found")
-    db.delete(db_cta)
-    db.commit()
+async def delete_cta(cta_id: int):
+    async with httpx.AsyncClient() as client:
+        res = await client.delete(f"{SUPABASE_URL}/rest/v1/ctas?id=eq.{cta_id}", headers=HEADERS)
+        if res.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Failed to delete CTA: {res.text}")
     return {"message": f"CTA {cta_id} successfully deleted"}

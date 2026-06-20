@@ -15,8 +15,12 @@ class CTACreate(CTABase):
 class CTAUpdate(CTABase):
     pass
 
+class CTAStatusUpdate(BaseModel):
+    status: str
+
 class CTA(CTABase):
     id: int
+    customer_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -40,6 +44,8 @@ class CustomerUpdate(CustomerBase):
 class Customer(CustomerBase):
     id: int
     ctas: List[CTA] = []
+    health_status: str
+    suggested_action: str
 
     class Config:
         from_attributes = True

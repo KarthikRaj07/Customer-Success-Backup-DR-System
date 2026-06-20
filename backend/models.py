@@ -16,6 +16,24 @@ class Customer(Base):
     # Establish relationship to CTA (One-to-Many)
     ctas = relationship("CTA", back_populates="customer", cascade="all, delete-orphan")
 
+    @property
+    def health_status(self) -> str:
+        if self.backup_status == "Failed":
+            return "Critical"
+        if (self.usage is not None and self.usage < 40) or (self.tickets is not None and self.tickets > 3):
+            return "At Risk"
+        return "Healthy"
+
+    @property
+    def suggested_action(self) -> str:
+        if self.backup_status == "Failed":
+            return "Fix Backup Immediately"
+        if self.usage is not None and self.usage < 40:
+            return "Schedule Training"
+        if self.tickets is not None and self.tickets > 3:
+            return "Escalate Issue"
+        return "No action required"
+
 
 class CTA(Base):
     __tablename__ = "ctas"
@@ -28,3 +46,7 @@ class CTA(Base):
 
     # Establish reverse relationship to Customer
     customer = relationship("Customer", back_populates="ctas")
+
+    @property
+    def customer_name(self) -> str:
+        return self.customer.name if self.customer else "Unknown"
